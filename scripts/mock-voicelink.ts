@@ -95,7 +95,7 @@ async function main() {
       console.log("SARVAM_API_KEY not set → only verifying handshake (no audio loop).");
     }
 
-    await sleep(9000);
+    await sleep(16000);
     console.log(`\nDone. bot audio frames: ${botFrames}, marks: ${marks}`);
     ws.send(JSON.stringify({ event: "stop", stop: { callSid: "mockcall" } }));
     ws.close();

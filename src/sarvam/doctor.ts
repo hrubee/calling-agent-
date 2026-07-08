@@ -11,7 +11,7 @@ export interface DoctorReport {
   chat: { ok: boolean; workingModel?: string; tried: { model: string; ok: boolean; detail?: string }[] };
 }
 
-const CHAT_CANDIDATES = ["sarvam-m", "sarvam-30b", "sarvam-105b"];
+const CHAT_CANDIDATES = ["sarvam-30b", "sarvam-105b", "sarvam-m"];
 
 /**
  * Live health probe of the Sarvam integration. Verifies TTS (A-law 8k), STT
@@ -62,11 +62,16 @@ export async function runDoctor(): Promise<DoctorReport> {
     try {
       const out = await completeChat([{ role: "user", content: "Reply with a short greeting." }], {
         model,
-        maxTokens: 30,
-        timeoutMs: 20000,
+        maxTokens: config.sarvam.chatMaxTokens,
+        timeoutMs: 30000,
       });
-      report.chat.tried.push({ model, ok: true, detail: out.slice(0, 80) });
-      if (!report.chat.ok) {
+      const ok = out.trim().length > 0;
+      report.chat.tried.push({
+        model,
+        ok,
+        detail: ok ? out.slice(0, 80) : "returned empty content (raise SARVAM_MAX_TOKENS)",
+      });
+      if (ok && !report.chat.ok) {
         report.chat.ok = true;
         report.chat.workingModel = model;
       }

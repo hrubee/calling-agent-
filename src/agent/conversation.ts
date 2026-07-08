@@ -193,7 +193,9 @@ export class Conversation {
       full = await streamChat(this.messages, {
         model: config.sarvam.chatModel,
         temperature: this.agent.temperature,
-        maxTokens: this.agent.maxTokens,
+        // Reasoning models need headroom for "thinking" before the answer;
+        // never send less than the configured budget.
+        maxTokens: Math.max(this.agent.maxTokens, config.sarvam.chatMaxTokens),
         signal: this.abortController!.signal,
         onDelta: (d) => {
           if (gen !== this.speechGen) return;

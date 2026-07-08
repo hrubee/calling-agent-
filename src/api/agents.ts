@@ -14,7 +14,7 @@ const AgentInput = z.object({
   ttsSpeaker: z.string().max(60).optional(),
   transferNumber: z.string().max(40).optional(),
   temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().min(16).max(2000).optional(),
+  maxTokens: z.number().int().min(16).max(8000).optional(),
 });
 
 agentsRouter.get("/", (_req, res) => {

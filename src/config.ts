@@ -50,7 +50,11 @@ const EnvSchema = z.object({
 
   SARVAM_API_KEY: z.string().optional().default(""),
   SARVAM_BASE_URL: z.string().optional().default("https://api.sarvam.ai"),
-  SARVAM_CHAT_MODEL: z.string().optional().default("sarvam-m"),
+  SARVAM_CHAT_MODEL: z.string().optional().default("sarvam-30b"),
+  // Sarvam chat models are reasoning models: they spend tokens "thinking" before
+  // answering, so max_tokens must be generous or the answer comes back empty.
+  SARVAM_REASONING_EFFORT: z.enum(["low", "medium", "high"]).optional().default("low"),
+  SARVAM_MAX_TOKENS: num(2048),
   SARVAM_STT_MODEL: z.string().optional().default("saaras:v3"),
   SARVAM_TTS_MODEL: z.string().optional().default("bulbul:v2"),
   SARVAM_TTS_SPEAKER: z.string().optional().default("anushka"),
@@ -105,6 +109,8 @@ export const config = {
     apiKey: parsed.SARVAM_API_KEY,
     baseUrl: parsed.SARVAM_BASE_URL.replace(/\/$/, ""),
     chatModel: parsed.SARVAM_CHAT_MODEL,
+    reasoningEffort: parsed.SARVAM_REASONING_EFFORT,
+    chatMaxTokens: parsed.SARVAM_MAX_TOKENS,
     sttModel: parsed.SARVAM_STT_MODEL,
     ttsModel: parsed.SARVAM_TTS_MODEL,
     ttsSpeaker: parsed.SARVAM_TTS_SPEAKER,

@@ -25,7 +25,7 @@ function defaultDB(): DBShape {
     ttsModel: config.sarvam.ttsModel,
     ttsSpeaker: config.sarvam.ttsSpeaker,
     temperature: 0.4,
-    maxTokens: 200,
+    maxTokens: 2048,
     createdAt: t,
     updatedAt: t,
   };
@@ -120,7 +120,7 @@ class Store {
       ttsSpeaker: input.ttsSpeaker ?? config.sarvam.ttsSpeaker,
       transferNumber: input.transferNumber,
       temperature: input.temperature ?? 0.4,
-      maxTokens: input.maxTokens ?? 200,
+      maxTokens: input.maxTokens ?? 2048,
       createdAt: t,
       updatedAt: t,
     };

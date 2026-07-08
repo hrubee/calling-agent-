@@ -350,7 +350,7 @@ function openAgentEditor(agent) {
     ttsSpeaker: (opts.speakers[opts.ttsModels[0]] || ["anushka"])[0],
     transferNumber: "",
     temperature: 0.4,
-    maxTokens: 200,
+    maxTokens: 2048,
   };
 
   const name = h("input", { value: agent.name, placeholder: "Sales agent" });
@@ -374,7 +374,7 @@ function openAgentEditor(agent) {
   const prompt = h("textarea", { style: "min-height:120px" }, agent.systemPrompt);
   const transfer = h("input", { value: agent.transferNumber || "", placeholder: "optional, e.g. +9198..." });
   const temp = h("input", { type: "number", step: "0.1", min: "0", max: "2", value: agent.temperature });
-  const maxTok = h("input", { type: "number", step: "10", min: "16", max: "2000", value: agent.maxTokens });
+  const maxTok = h("input", { type: "number", step: "64", min: "16", max: "8000", value: agent.maxTokens });
 
   openModal(
     modalShell(
@@ -399,7 +399,7 @@ function openAgentEditor(agent) {
           "div",
           { class: "row" },
           h("div", { class: "field" }, h("label", null, "Temperature"), temp),
-          h("div", { class: "field" }, h("label", null, "Max reply tokens"), maxTok),
+          h("div", { class: "field" }, h("label", null, "Max tokens (incl. reasoning)"), maxTok),
         ),
       ],
       [
