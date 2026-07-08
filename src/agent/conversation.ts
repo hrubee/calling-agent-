@@ -318,7 +318,11 @@ export class Conversation {
         // Send ~100 ms of audio, then pace to roughly real time.
         for (let k = 0; k < 5 && this.frameQueue.length && gen === this.speechGen; k++) {
           const frame = this.frameQueue.shift()!;
-          this.send({ event: "media", media: { payload: frame.toString("base64") } });
+          this.send({
+            event: "media",
+            stream_sid: this.streamSid,
+            media: { payload: frame.toString("base64") },
+          });
           sent++;
         }
         await sleep(90);
@@ -330,7 +334,7 @@ export class Conversation {
     if (gen === this.speechGen && !this.closed) {
       this.botSpeaking = false;
       this.log.info({ callId: this.callId, frames: sent }, "response audio sent");
-      this.send({ event: "mark", mark: { name: "response_done" } });
+      this.send({ event: "mark", stream_sid: this.streamSid, mark: { name: "response_done" } });
       if (this.pendingTransfer && this.agent.transferNumber) {
         this.doTransfer();
       }
