@@ -5,6 +5,7 @@ import { logger } from "./logger";
 import { buildApp } from "./server";
 import { attachMediaStream } from "./ws/mediaStream";
 import { db } from "./store/db";
+import { warmAllGreetings } from "./agent/greeting";
 
 const log = logger.child({ mod: "main" });
 
@@ -51,6 +52,8 @@ server.listen(config.port, () => {
   log.info(`   VoiceLink hook: ${urls.webhookUrl}`);
   if (!config.sarvam.configured) {
     log.warn("SARVAM_API_KEY is not set — STT/LLM/TTS are disabled until you configure it.");
+  } else {
+    warmAllGreetings().catch((err) => log.warn({ err }, "greeting warm-up failed"));
   }
   if (generatedSecrets.length) {
     log.warn(

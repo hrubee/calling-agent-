@@ -10,6 +10,7 @@ import { synthesizeAlaw8k } from "../sarvam/tts";
 import { db } from "../store/db";
 import type { Agent, TranscriptTurn } from "../store/types";
 import { buildSystemPrompt, TRANSFER_TOKEN } from "./prompt";
+import { getGreetingAudio } from "./greeting";
 
 const FRAME_SAMPLES = 160; // 20 ms @ 8 kHz
 const FRAME_BYTES = 160; // A-law: 1 byte/sample
@@ -179,8 +180,17 @@ export class Conversation {
     const text = this.agent.greeting.trim();
     this.recordTurn({ role: "assistant", text });
     this.messages.push({ role: "assistant", content: text });
-    this.enqueueSentence(text, gen);
-    this.responseComplete = true;
+    try {
+      const audio = await getGreetingAudio(this.agent); // instant if pre-cached
+      if (gen !== this.speechGen || this.closed) return;
+      if (audio.length) this.enqueueAlaw(audio);
+      else this.enqueueSentence(text, gen); // fallback (e.g. Sarvam not configured)
+    } catch (err) {
+      this.log.error({ err }, "greeting audio failed; falling back to live TTS");
+      this.enqueueSentence(text, gen);
+    } finally {
+      this.responseComplete = true;
+    }
   }
 
   private async respond(): Promise<void> {
@@ -295,6 +305,7 @@ export class Conversation {
     this.draining = true;
     const gen = this.speechGen;
     this.botSpeaking = true;
+    let sent = 0;
     try {
       while (!this.closed) {
         if (gen !== this.speechGen) break;
@@ -308,6 +319,7 @@ export class Conversation {
         for (let k = 0; k < 5 && this.frameQueue.length && gen === this.speechGen; k++) {
           const frame = this.frameQueue.shift()!;
           this.send({ event: "media", media: { payload: frame.toString("base64") } });
+          sent++;
         }
         await sleep(90);
       }
@@ -317,6 +329,7 @@ export class Conversation {
 
     if (gen === this.speechGen && !this.closed) {
       this.botSpeaking = false;
+      this.log.info({ callId: this.callId, frames: sent }, "response audio sent");
       this.send({ event: "mark", mark: { name: "response_done" } });
       if (this.pendingTransfer && this.agent.transferNumber) {
         this.doTransfer();

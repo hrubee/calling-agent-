@@ -18,6 +18,7 @@ function nowIso() {
 export function attachMediaStream(ws: WebSocket): void {
   let conv: Conversation | null = null;
   let callId: string | null = null;
+  let loggedFirstMedia = false;
 
   const send = (obj: unknown) => {
     if (ws.readyState === ws.OPEN) {
@@ -45,6 +46,11 @@ export function attachMediaStream(ws: WebSocket): void {
         break;
       case "media": {
         const media = msg.media || {};
+        if (!loggedFirstMedia) {
+          loggedFirstMedia = true;
+          const len = media.payload ? Buffer.from(media.payload, "base64").length : 0;
+          log.info({ callId, track: media.track, bytes: len }, "first inbound media frame");
+        }
         // Only feed the caller's inbound track into the agent.
         if (media.payload && (media.track === undefined || media.track === "inbound")) {
           conv?.onInboundAudio(media.payload);
@@ -129,7 +135,10 @@ export function attachMediaStream(ws: WebSocket): void {
       return;
     }
 
-    log.info({ callId, agent: agent.name, from, to, streamSid }, "call started");
+    log.info(
+      { callId, agent: agent.name, from, to, streamSid, mediaFormat: s.media_format },
+      "call started",
+    );
     conv = new Conversation({ agent, send, callId });
     await conv.start(streamSid);
   }
