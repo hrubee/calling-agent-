@@ -306,17 +306,17 @@ export class Conversation {
     const gen = this.speechGen;
     this.botSpeaking = true;
     let sent = 0;
+    // Wall-clock paced sender: emit audio at real time (20 ms/frame) while
+    // keeping a small lead buffer. Robust to event-loop jitter — no bursts or
+    // gaps, which otherwise sound like static/choppiness on the caller's end.
+    const FRAME_MS = 20;
+    const LEAD_MS = 200;
+    const startWall = Date.now();
     try {
       while (!this.closed) {
         if (gen !== this.speechGen) break;
-        if (this.frameQueue.length === 0) {
-          // Response still being synthesized? wait for more frames.
-          if (this.responseComplete && !this.ttsWorking && this.ttsQueue.length === 0) break;
-          await sleep(20);
-          continue;
-        }
-        // Send ~100 ms of audio, then pace to roughly real time.
-        for (let k = 0; k < 5 && this.frameQueue.length && gen === this.speechGen; k++) {
+        const target = Math.floor((Date.now() - startWall + LEAD_MS) / FRAME_MS);
+        while (sent < target && this.frameQueue.length && gen === this.speechGen && !this.closed) {
           const frame = this.frameQueue.shift()!;
           this.send({
             event: "media",
@@ -325,7 +325,11 @@ export class Conversation {
           });
           sent++;
         }
-        await sleep(90);
+        if (this.frameQueue.length === 0) {
+          // Nothing queued: done if the response is complete, else wait for more.
+          if (this.responseComplete && !this.ttsWorking && this.ttsQueue.length === 0) break;
+        }
+        await sleep(FRAME_MS);
       }
     } finally {
       this.draining = false;
