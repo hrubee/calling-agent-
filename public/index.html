@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Calling Agent</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%9E%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Login -->
+    <div id="login" class="login-overlay hidden">
+      <form id="login-form" class="login-card">
+        <div class="login-logo">📞</div>
+        <h1>Calling Agent</h1>
+        <p class="muted">Sign in to manage your AI phone agents.</p>
+        <input id="login-password" type="password" placeholder="Admin password" autocomplete="current-password" />
+        <button type="submit" class="btn btn-primary">Sign in</button>
+        <div id="login-error" class="login-error"></div>
+      </form>
+    </div>
+
+    <!-- App -->
+    <div id="app" class="hidden">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-logo">📞</span>
+          <div>
+            <div class="brand-name">Calling Agent</div>
+            <div class="brand-sub">Sarvam AI × VoiceLink</div>
+          </div>
+        </div>
+        <nav class="tabs">
+          <button class="tab active" data-tab="calls">Calls</button>
+          <button class="tab" data-tab="agents">Agents</button>
+          <button class="tab" data-tab="numbers">Numbers</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+        <div class="topbar-right">
+          <span id="live-dot" class="live-dot" title="Live updates"></span>
+          <button id="logout-btn" class="btn btn-ghost">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- Calls -->
+        <section id="tab-calls" class="tab-panel">
+          <div class="panel-head">
+            <h2>Calls</h2>
+            <button id="new-call-btn" class="btn btn-primary">＋ Place a call</button>
+          </div>
+          <div id="calls-list" class="table-wrap"></div>
+        </section>
+
+        <!-- Agents -->
+        <section id="tab-agents" class="tab-panel hidden">
+          <div class="panel-head">
+            <h2>Agents</h2>
+            <button id="new-agent-btn" class="btn btn-primary">＋ New agent</button>
+          </div>
+          <div id="agents-list" class="cards"></div>
+        </section>
+
+        <!-- Numbers -->
+        <section id="tab-numbers" class="tab-panel hidden">
+          <div class="panel-head">
+            <h2>Phone numbers (DIDs)</h2>
+            <button id="new-number-btn" class="btn btn-primary">＋ Add number</button>
+          </div>
+          <p class="muted small">Map each VoiceLink number to the agent that answers its inbound calls.</p>
+          <div id="numbers-list" class="table-wrap"></div>
+        </section>
+
+        <!-- Settings -->
+        <section id="tab-settings" class="tab-panel hidden">
+          <h2>Settings</h2>
+          <div id="settings-body" class="settings-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Modal host -->
+    <div id="modal-root"></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
