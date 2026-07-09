@@ -42,3 +42,20 @@ export function assertConfigured(): void {
     throw new SarvamError(0, "", "SARVAM_API_KEY is not set — configure it to enable STT/LLM/TTS.");
   }
 }
+
+let lastWarmAt = 0;
+
+/**
+ * Pre-warm the pooled HTTPS connection to the Sarvam API (DNS + TCP + TLS)
+ * so the next real request doesn't pay the handshake. Fire-and-forget;
+ * throttled because undici keeps warm connections alive only a few seconds.
+ */
+export function warmSarvam(): void {
+  if (!config.sarvam.configured) return;
+  const now = Date.now();
+  if (now - lastWarmAt < 2000) return;
+  lastWarmAt = now;
+  fetchWithTimeout(config.sarvam.baseUrl + "/", { method: "GET" }, 3000)
+    .then((res) => res.body?.cancel())
+    .catch(() => {});
+}

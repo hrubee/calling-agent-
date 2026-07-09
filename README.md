@@ -148,6 +148,6 @@ Health check: `GET /healthz`.
 ---
 
 ## Notes & limitations
-- STT is batch-per-utterance (Sarvam has no public streaming STT WS); latency is one STT+LLM+TTS round trip per turn, reduced by sentence-chunked TTS.
+- STT is batch-per-utterance (Sarvam has no public streaming STT WS), so each turn costs an STT+LLM+TTS round trip. Mitigations built in: speculative STT during the caller's trailing silence (`VAD_SPECULATIVE_MS`), a short endpoint (`VAD_SILENCE_MS=450`), the first clause of a reply is TTS'd before the sentence finishes, the Sarvam TLS connection is pre-warmed, and a filler phrase plays if the reply takes longer than `FILLER_DELAY_MS`. Per-turn timings are logged as `turn latency`.
 - The JSON store is single-instance. For horizontal scale, swap `src/store/db.ts` for Postgres (repository interface is already isolated).
 - Audio format assumed a-law 8 kHz mono per VoiceLink docs; TTS output has its container header stripped defensively.

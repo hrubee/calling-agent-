@@ -13,7 +13,8 @@ import { concatInt16 } from "./resample";
 export type VadResult =
   | { type: "silence" }
   | { type: "speech-start" }
-  | { type: "speech" }
+  | { type: "speech"; voiced: boolean }
+  | { type: "speech-early"; pcm: Int16Array }
   | { type: "utterance"; pcm: Int16Array; durationMs: number };
 
 export interface VadOptions {
@@ -28,6 +29,12 @@ export interface VadOptions {
   maxMs: number;
   /** Pre-roll (ms) prepended to captured speech. */
   preRollMs?: number;
+  /**
+   * Trailing silence (ms) at which a `speech-early` snapshot of the utterance
+   * is emitted, before the final endpoint — lets the caller start STT
+   * speculatively. 0 disables. Fires again if speech resumes and re-pauses.
+   */
+  earlyMs?: number;
 }
 
 export class Vad {
@@ -38,9 +45,10 @@ export class Vad {
   private silenceMs = 0;
   private speechMs = 0;
   private capturedMs = 0;
+  private earlyFired = false;
 
   constructor(opts: VadOptions) {
-    this.opts = { preRollMs: 240, ...opts };
+    this.opts = { preRollMs: 240, earlyMs: 0, ...opts };
   }
 
   get speaking(): boolean {
@@ -54,6 +62,7 @@ export class Vad {
     this.silenceMs = 0;
     this.speechMs = 0;
     this.capturedMs = 0;
+    this.earlyFired = false;
   }
 
   private static rms(frame: Int16Array): number {
@@ -97,6 +106,7 @@ export class Vad {
     if (voiced) {
       this.speechMs += frameMs;
       this.silenceMs = 0;
+      this.earlyFired = false;
     } else {
       this.silenceMs += frameMs;
     }
@@ -112,6 +122,16 @@ export class Vad {
       if (!hadSpeech) return { type: "silence" };
       return { type: "utterance", pcm, durationMs };
     }
-    return { type: "speech" };
+
+    if (
+      !this.earlyFired &&
+      this.opts.earlyMs > 0 &&
+      this.silenceMs >= this.opts.earlyMs &&
+      this.speechMs >= this.opts.minSpeechMs
+    ) {
+      this.earlyFired = true;
+      return { type: "speech-early", pcm: concatInt16(this.buffer) };
+    }
+    return { type: "speech", voiced };
   }
 }

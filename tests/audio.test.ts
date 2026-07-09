@@ -62,6 +62,37 @@ test("VAD endpoints an utterance after trailing silence", () => {
   assert.ok(utt!.pcm.length > 0);
 });
 
+test("VAD emits a speculative early endpoint before the final one", () => {
+  const vad = new Vad({ sampleRate: 8000, threshold: 500, silenceMs: 200, minSpeechMs: 60, maxMs: 5000, preRollMs: 40, earlyMs: 80 });
+  const loud = new Int16Array(160).fill(8000);
+  const quiet = new Int16Array(160);
+  for (let i = 0; i < 20; i++) vad.push(loud);
+  const seen: string[] = [];
+  let earlyLen = 0;
+  for (let i = 0; i < 20; i++) {
+    const r = vad.push(quiet);
+    if (r.type === "speech-early") earlyLen = r.pcm.length;
+    if (r.type === "speech-early" || r.type === "utterance") seen.push(r.type);
+  }
+  assert.deepEqual(seen, ["speech-early", "utterance"]);
+  assert.ok(earlyLen > 0);
+});
+
+test("VAD re-arms the early endpoint when speech resumes", () => {
+  const vad = new Vad({ sampleRate: 8000, threshold: 500, silenceMs: 200, minSpeechMs: 60, maxMs: 60000, preRollMs: 40, earlyMs: 80 });
+  const loud = new Int16Array(160).fill(8000);
+  const quiet = new Int16Array(160);
+  const earlies: number[] = [];
+  const feed = (frame: Int16Array, n: number) => {
+    for (let i = 0; i < n; i++) if (vad.push(frame).type === "speech-early") earlies.push(i);
+  };
+  feed(loud, 20);
+  feed(quiet, 6); // 120 ms silence: early fires, but no endpoint yet
+  feed(loud, 10); // caller resumes
+  feed(quiet, 6); // early fires again
+  assert.equal(earlies.length, 2);
+});
+
 test("VAD ignores pure silence", () => {
   const vad = new Vad({ sampleRate: 8000, threshold: 500, silenceMs: 200, minSpeechMs: 60, maxMs: 5000 });
   let emitted = false;

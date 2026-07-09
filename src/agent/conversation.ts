@@ -5,15 +5,20 @@ import { Vad } from "../audio/vad";
 import { bus } from "../events";
 import { logger } from "../logger";
 import { streamChat, type ChatMessage } from "../sarvam/chat";
-import { transcribePcm8k } from "../sarvam/stt";
+import { warmSarvam } from "../sarvam/client";
+import { transcribePcm8k, type SttResult } from "../sarvam/stt";
 import { synthesizeAlaw8k } from "../sarvam/tts";
 import { db } from "../store/db";
 import type { Agent, TranscriptTurn } from "../store/types";
 import { buildSystemPrompt, TRANSFER_TOKEN } from "./prompt";
-import { getGreetingAudio } from "./greeting";
+import { getFillerAudio, getGreetingAudio } from "./greeting";
 
 const FRAME_SAMPLES = 160; // 20 ms @ 8 kHz
 const FRAME_BYTES = 160; // A-law: 1 byte/sample
+
+// The LLM can "think" for 5s+; chain up to this many fillers while waiting.
+const MAX_FILLERS_PER_TURN = 2;
+const FILLER_REARM_MS = 2500;
 
 type Send = (obj: unknown) => void;
 
@@ -30,6 +35,37 @@ function splitSentences(text: string): { sentences: string[]; rest: string } {
     last = re.lastIndex;
   }
   return { sentences, rest: text.slice(last) };
+}
+
+const FIRST_CHUNK_MIN = 24;
+const FIRST_CHUNK_MAX = 60;
+
+/**
+ * Where to cut the FIRST audible chunk of a reply so TTS can start before a
+ * full sentence exists: the first clause boundary past FIRST_CHUNK_MIN chars,
+ * else a word boundary once the text exceeds FIRST_CHUNK_MAX. Returns 0 if
+ * the text should keep accumulating.
+ */
+function firstClauseCut(text: string): number {
+  const re = /[,;:]\s/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index + 1 >= FIRST_CHUNK_MIN) return m.index + 1;
+  }
+  if (text.length >= FIRST_CHUNK_MAX) {
+    const sp = text.lastIndexOf(" ", FIRST_CHUNK_MAX);
+    if (sp >= FIRST_CHUNK_MIN) return sp;
+  }
+  return 0;
+}
+
+/** Per-turn latency marks (ms since the caller stopped talking). */
+interface TurnMarks {
+  t0: number;
+  sttMs?: number;
+  llmFirstMs?: number;
+  ttsFirstMs?: number;
+  firstAudioMs?: number;
 }
 
 /**
@@ -66,6 +102,17 @@ export class Conversation {
   private ttsQueue: { text: string; gen: number }[] = [];
   private ttsWorking = false;
 
+  // Speculative STT started during the caller's trailing silence.
+  private specStt: Promise<SttResult | null> | null = null;
+
+  // Filler ("Hmm.") played if the reply isn't ready within the delay.
+  private fillerTimer: NodeJS.Timeout | null = null;
+  private fillerIdx = 0;
+  private fillersThisTurn = 0;
+
+  // Per-turn latency instrumentation.
+  private marks: TurnMarks | null = null;
+
   private closed = false;
 
   constructor(opts: { agent: Agent; send: Send; callId: string }) {
@@ -79,6 +126,7 @@ export class Conversation {
       silenceMs: config.vad.silenceMs,
       minSpeechMs: config.vad.minSpeechMs,
       maxMs: config.vad.utteranceMaxMs,
+      earlyMs: config.vad.speculativeMs,
     });
   }
 
@@ -86,6 +134,7 @@ export class Conversation {
 
   async start(streamSid: string): Promise<void> {
     this.streamSid = streamSid;
+    warmSarvam(); // pre-open the TLS connection before the first turn
     if (config.greetingEnabled && this.agent.greeting?.trim()) {
       await this.greet();
     }
@@ -109,6 +158,8 @@ export class Conversation {
     this.speechGen++; // cancel any playback/tts
     this.frameQueue = [];
     this.ttsQueue = [];
+    this.specStt = null;
+    this.clearFiller();
     this.abortController?.abort();
   }
 
@@ -132,13 +183,32 @@ export class Conversation {
 
   private feedVad(frame: Int16Array): void {
     const r = this.vad.push(frame);
-    if (r.type === "speech-start") {
-      if (this.botSpeaking || this.ttsWorking || this.frameQueue.length > 0) this.bargeIn();
-    } else if (r.type === "utterance") {
-      const pcm = r.pcm;
-      this.turnChain = this.turnChain.then(() =>
-        this.handleUtterance(pcm).catch((err) => this.log.error({ err }, "turn failed")),
-      );
+    switch (r.type) {
+      case "speech-start":
+        warmSarvam(); // STT follows within seconds — pay the TLS handshake now
+        this.specStt = null;
+        if (this.botSpeaking || this.ttsWorking || this.frameQueue.length > 0) this.bargeIn();
+        break;
+      case "speech":
+        // Caller resumed after a pause — any speculative transcript is stale.
+        if (r.voiced) this.specStt = null;
+        break;
+      case "speech-early":
+        // Start STT during the trailing silence; discarded if speech resumes.
+        this.specStt = transcribePcm8k(r.pcm, this.agent.language).catch((err) => {
+          this.log.debug({ err }, "speculative STT failed");
+          return null;
+        });
+        break;
+      case "utterance": {
+        const pcm = r.pcm;
+        const spec = this.specStt;
+        this.specStt = null;
+        this.turnChain = this.turnChain.then(() =>
+          this.handleUtterance(pcm, spec).catch((err) => this.log.error({ err }, "turn failed")),
+        );
+        break;
+      }
     }
   }
 
@@ -147,6 +217,7 @@ export class Conversation {
     this.speechGen++;
     this.frameQueue = [];
     this.ttsQueue = [];
+    this.clearFiller();
     this.abortController?.abort();
     this.botSpeaking = false;
     this.pendingTransfer = false;
@@ -155,18 +226,31 @@ export class Conversation {
 
   // ---- Turns ----
 
-  private async handleUtterance(pcm8k: Int16Array): Promise<void> {
+  private async handleUtterance(
+    pcm8k: Int16Array,
+    spec?: Promise<SttResult | null> | null,
+  ): Promise<void> {
     if (this.closed) return;
+    this.marks = { t0: Date.now() };
+    this.fillersThisTurn = 0;
+    this.armFiller(this.speechGen);
+
     let transcript = "";
     try {
-      const r = await transcribePcm8k(pcm8k, this.agent.language);
+      let r = spec ? await spec : null;
+      if (!r) r = await transcribePcm8k(pcm8k, this.agent.language);
       transcript = r.transcript;
       if (r.languageCode) this.detectedLang = r.languageCode;
     } catch (err) {
       this.log.error({ err }, "STT failed");
+      this.clearFiller();
       return;
     }
-    if (!transcript) return;
+    if (this.marks) this.marks.sttMs = Date.now() - this.marks.t0;
+    if (!transcript) {
+      this.clearFiller();
+      return;
+    }
 
     this.recordTurn({ role: "user", text: transcript, lang: this.detectedLang });
     this.messages.push({ role: "user", content: transcript });
@@ -198,9 +282,10 @@ export class Conversation {
     const gen = this.speechGen;
     let buffer = "";
     let full = "";
+    let firstChunkSent = false;
 
-    try {
-      full = await streamChat(this.messages, {
+    const runLlm = () =>
+      streamChat(this.messages, {
         model: config.sarvam.chatModel,
         temperature: this.agent.temperature,
         // Reasoning models need headroom for "thinking" before the answer;
@@ -209,6 +294,9 @@ export class Conversation {
         signal: this.abortController!.signal,
         onDelta: (d) => {
           if (gen !== this.speechGen) return;
+          if (this.marks && this.marks.llmFirstMs === undefined) {
+            this.marks.llmFirstMs = Date.now() - this.marks.t0;
+          }
           buffer += d;
           if (buffer.includes(TRANSFER_TOKEN)) {
             this.pendingTransfer = true;
@@ -216,15 +304,34 @@ export class Conversation {
           }
           const { sentences, rest } = splitSentences(buffer);
           for (const s of sentences) this.enqueueSentence(s, gen);
+          if (sentences.length) firstChunkSent = true;
+          buffer = rest;
+          // First audible chunk: don't wait for a full sentence — flush the
+          // first clause so TTS starts while the model is still writing.
+          if (!firstChunkSent) {
+            const cut = firstClauseCut(buffer);
+            if (cut > 0) {
+              this.enqueueSentence(buffer.slice(0, cut), gen);
+              buffer = buffer.slice(cut);
+              firstChunkSent = true;
+            }
+          }
           // Flush an over-long tail without a terminator to keep latency low.
-          if (rest.length > 240) {
-            this.enqueueSentence(rest, gen);
+          if (buffer.length > 240) {
+            this.enqueueSentence(buffer, gen);
             buffer = "";
-          } else {
-            buffer = rest;
           }
         },
       });
+
+    try {
+      full = await runLlm();
+      // A reasoning model that exhausts max_tokens while "thinking" returns
+      // empty content. Silence is worse than waiting — retry once.
+      if (!full && gen === this.speechGen && !this.closed) {
+        this.log.warn({ callId: this.callId }, "LLM returned empty reply — retrying once");
+        full = await runLlm();
+      }
     } catch (err: any) {
       if (err?.name === "AbortError") return; // barged-in
       this.log.error({ err }, "chat failed");
@@ -258,6 +365,7 @@ export class Conversation {
   private enqueueSentence(text: string, gen: number): void {
     const t = text.trim();
     if (!t) return;
+    this.clearFiller(); // real speech is on the way
     this.ttsQueue.push({ text: t, gen });
     void this.runTtsWorker();
   }
@@ -275,6 +383,9 @@ export class Conversation {
             speaker: this.agent.ttsSpeaker,
             model: this.agent.ttsModel,
           });
+          if (this.marks && this.marks.ttsFirstMs === undefined) {
+            this.marks.ttsFirstMs = Date.now() - this.marks.t0;
+          }
           if (item.gen !== this.speechGen || this.closed) continue;
           this.enqueueAlaw(alaw);
         } catch (err) {
@@ -286,6 +397,52 @@ export class Conversation {
     }
   }
 
+  // ---- Filler (masks response latency) ----
+
+  private armFiller(gen: number, delayMs = config.filler.delayMs): void {
+    if (!config.filler.enabled || !config.sarvam.configured) return;
+    this.clearFiller();
+    this.fillerTimer = setTimeout(() => {
+      this.fillerTimer = null;
+      void this.playFiller(gen);
+    }, delayMs);
+  }
+
+  /** True while this turn is still waiting for the real reply's audio. */
+  private fillerStillUseful(gen: number): boolean {
+    return (
+      gen === this.speechGen &&
+      !this.closed &&
+      this.marks?.firstAudioMs === undefined && // no real audio yet this turn
+      !this.ttsWorking &&
+      this.ttsQueue.length === 0 &&
+      this.frameQueue.length === 0
+    );
+  }
+
+  private async playFiller(gen: number): Promise<void> {
+    if (!this.fillerStillUseful(gen)) return;
+    try {
+      const audio = await getFillerAudio(this.agent, this.fillerIdx++, this.ttsLang());
+      // Re-check: the real reply may have started while we synthesized.
+      if (!this.fillerStillUseful(gen)) return;
+      if (audio.length) {
+        this.enqueueAlaw(audio, true);
+        this.fillersThisTurn++;
+        if (this.fillersThisTurn < MAX_FILLERS_PER_TURN) this.armFiller(gen, FILLER_REARM_MS);
+      }
+    } catch (err) {
+      this.log.debug({ err }, "filler audio failed");
+    }
+  }
+
+  private clearFiller(): void {
+    if (this.fillerTimer) {
+      clearTimeout(this.fillerTimer);
+      this.fillerTimer = null;
+    }
+  }
+
   private ttsLang(): string {
     if (this.agent.language && this.agent.language !== "auto") return this.agent.language;
     return this.detectedLang || config.ttsFallbackLanguage;
@@ -293,7 +450,21 @@ export class Conversation {
 
   // ---- Outbound audio playback ----
 
-  private enqueueAlaw(alaw: Buffer): void {
+  private enqueueAlaw(alaw: Buffer, isFiller = false): void {
+    if (!isFiller && this.marks && this.marks.firstAudioMs === undefined) {
+      const m = this.marks;
+      m.firstAudioMs = Date.now() - m.t0;
+      this.log.info(
+        {
+          callId: this.callId,
+          sttMs: m.sttMs,
+          llmFirstMs: m.llmFirstMs,
+          ttsFirstMs: m.ttsFirstMs,
+          firstAudioMs: m.firstAudioMs,
+        },
+        "turn latency (ms since caller stopped talking)",
+      );
+    }
     for (let i = 0; i < alaw.length; i += FRAME_BYTES) {
       this.frameQueue.push(alaw.subarray(i, Math.min(i + FRAME_BYTES, alaw.length)));
     }

@@ -52,9 +52,10 @@ const EnvSchema = z.object({
   SARVAM_BASE_URL: z.string().optional().default("https://api.sarvam.ai"),
   SARVAM_CHAT_MODEL: z.string().optional().default("sarvam-30b"),
   // Sarvam chat models are reasoning models: they spend tokens "thinking" before
-  // answering, so max_tokens must be generous or the answer comes back empty.
+  // answering (observed ~5-7k chars of reasoning even at low effort), so
+  // max_tokens must be generous or the answer comes back empty.
   SARVAM_REASONING_EFFORT: z.enum(["low", "medium", "high"]).optional().default("low"),
-  SARVAM_MAX_TOKENS: num(2048),
+  SARVAM_MAX_TOKENS: num(4096),
   SARVAM_STT_MODEL: z.string().optional().default("saaras:v3"),
   SARVAM_TTS_MODEL: z.string().optional().default("bulbul:v2"),
   SARVAM_TTS_SPEAKER: z.string().optional().default("anushka"),
@@ -78,10 +79,19 @@ const EnvSchema = z.object({
   DATA_DIR: z.string().optional().default("./data"),
 
   VAD_THRESHOLD: num(650),
-  VAD_SILENCE_MS: num(700),
+  VAD_SILENCE_MS: num(450),
   VAD_MIN_SPEECH_MS: num(250),
+  // Trailing silence (ms) at which STT starts speculatively, before the final
+  // endpoint. Discarded if the caller resumes speaking. 0 disables.
+  VAD_SPECULATIVE_MS: num(250),
   UTTERANCE_MAX_MS: num(15000),
   GREETING_ENABLED: bool(true),
+
+  // Filler phrases ("Hmm.") played if the reply isn't ready within the delay,
+  // so the caller never sits in dead air. Semicolon-separated, rotated per turn.
+  FILLER_ENABLED: bool(true),
+  FILLER_DELAY_MS: num(900),
+  FILLER_TEXTS: z.string().optional().default("Hmm.;One moment, please."),
 });
 
 const parsed = EnvSchema.parse(process.env);
@@ -141,9 +151,18 @@ export const config = {
     threshold: parsed.VAD_THRESHOLD,
     silenceMs: parsed.VAD_SILENCE_MS,
     minSpeechMs: parsed.VAD_MIN_SPEECH_MS,
+    speculativeMs: parsed.VAD_SPECULATIVE_MS,
     utteranceMaxMs: parsed.UTTERANCE_MAX_MS,
   },
   greetingEnabled: parsed.GREETING_ENABLED,
+
+  filler: {
+    enabled: parsed.FILLER_ENABLED,
+    delayMs: parsed.FILLER_DELAY_MS,
+    texts: parsed.FILLER_TEXTS.split(";")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
 } as const;
 
 export type Config = typeof config;
