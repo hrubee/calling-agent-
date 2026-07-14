@@ -1,4 +1,5 @@
 import { json, Router } from "express";
+import { warmAllGreetings } from "../agent/greeting";
 import { db } from "../store/db";
 
 /**
@@ -18,6 +19,7 @@ adminRouter.post("/import", json({ limit: "50mb" }), (req, res) => {
     return res.status(400).json({ error: "expected a full DB export (agents/calls/numbers/settings)" });
   }
   db.importAll(body);
+  void warmAllGreetings(); // pre-synthesize greetings/fillers for imported agents
   res.json({
     ok: true,
     agents: body.agents.length,
