@@ -68,7 +68,9 @@ export async function triggerOutbound(p: OutboundParams): Promise<OutboundResult
       [cfg.fieldPhone]: p.toNumber,
     };
     if (p.did) bodyObj[cfg.fieldDid] = p.did;
-    if (cfg.fieldParams && Object.keys(params).length) bodyObj[cfg.fieldParams] = params;
+    // VoiceLink expects custom_parameters as a JSON *string*, not an object.
+    if (cfg.fieldParams && Object.keys(params).length)
+      bodyObj[cfg.fieldParams] = JSON.stringify(params);
     headers["Content-Type"] = "application/json";
     init = { method, headers, body: JSON.stringify(bodyObj) };
   }
@@ -80,7 +82,13 @@ export async function triggerOutbound(p: OutboundParams): Promise<OutboundResult
   try {
     const json = JSON.parse(text);
     providerCallId =
-      json.callId ?? json.call_id ?? json.id ?? json.uuid ?? json.data?.callId ?? json.data?.id;
+      json.callId ??
+      json.call_id ??
+      json.outbound_queue_id ??
+      json.id ??
+      json.uuid ??
+      json.data?.callId ??
+      json.data?.id;
     if (providerCallId != null) providerCallId = String(providerCallId);
   } catch {
     /* non-JSON response */
