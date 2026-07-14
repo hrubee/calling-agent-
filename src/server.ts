@@ -2,6 +2,7 @@ import { join } from "node:path";
 import express, { type Express } from "express";
 import { config, panelUrls } from "./config";
 import { logger } from "./logger";
+import { adminRouter } from "./api/admin";
 import { agentsRouter } from "./api/agents";
 import { callsRouter } from "./api/calls";
 import { numbersRouter } from "./api/numbers";
@@ -62,6 +63,7 @@ export function buildApp(): Express {
   // --- Protected API ---
   app.get("/api/me", requireAuth, me);
   app.use("/api", requireAuth);
+  app.use("/api/admin", adminRouter);
   app.use("/api/agents", agentsRouter);
   app.use("/api/calls", callsRouter);
   app.use("/api/numbers", numbersRouter);

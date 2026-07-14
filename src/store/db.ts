@@ -235,6 +235,22 @@ class Store {
     return c;
   }
 
+  // ---- Backup / restore ----
+  exportAll(): DBShape {
+    return this.data;
+  }
+  /** Replace the entire store (volume migration / restore). Persists immediately. */
+  importAll(shape: DBShape): void {
+    const d = defaultDB();
+    this.data = {
+      agents: Array.isArray(shape.agents) && shape.agents.length ? shape.agents : d.agents,
+      numbers: Array.isArray(shape.numbers) ? shape.numbers : [],
+      calls: Array.isArray(shape.calls) ? shape.calls : [],
+      settings: shape.settings && typeof shape.settings === "object" ? shape.settings : d.settings,
+    };
+    this.flushSync();
+  }
+
   // ---- Settings ----
   getSettings(): Settings {
     return this.data.settings;
