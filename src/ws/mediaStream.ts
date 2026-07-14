@@ -4,6 +4,7 @@ import { bus } from "../events";
 import { logger } from "../logger";
 import { db } from "../store/db";
 import type { CallDirection } from "../store/types";
+import { markWsClosed, markWsConnected } from "../voicelink/linkStatus";
 
 const log = logger.child({ mod: "media-stream" });
 
@@ -19,6 +20,7 @@ export function attachMediaStream(ws: WebSocket): void {
   let conv: Conversation | null = null;
   let callId: string | null = null;
   let loggedFirstMedia = false;
+  markWsConnected();
 
   const send = (obj: unknown) => {
     if (ws.readyState === ws.OPEN) {
@@ -73,6 +75,7 @@ export function attachMediaStream(ws: WebSocket): void {
   });
 
   ws.on("close", () => {
+    markWsClosed();
     conv?.close();
     finalizeEnded();
   });

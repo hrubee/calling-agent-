@@ -9,6 +9,7 @@ import { settingsRouter } from "./api/settings";
 import { eventsRouter } from "./api/events";
 import { login, logout, me, requireAuth } from "./api/auth";
 import { handleVoicelinkWebhook } from "./voicelink/webhooks";
+import { getVoicelinkLink } from "./voicelink/linkStatus";
 
 const log = logger.child({ mod: "server" });
 
@@ -34,6 +35,7 @@ export function buildApp(): Express {
       uptimeSec: Math.round((Date.now() - startedAt) / 1000),
       sarvamConfigured: config.sarvam.configured,
       outboundConfigured: config.voicelink.lead.configured,
+      voicelink: getVoicelinkLink(),
       time: new Date().toISOString(),
     });
   });

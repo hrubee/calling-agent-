@@ -2,6 +2,7 @@ import { bus } from "../events";
 import { logger } from "../logger";
 import { db } from "../store/db";
 import type { Call, CallStatus } from "../store/types";
+import { markWebhookSeen } from "./linkStatus";
 
 const log = logger.child({ mod: "voicelink-webhook" });
 
@@ -54,6 +55,7 @@ export interface WebhookResult {
  * Updates or creates the matching call record and pushes a live update.
  */
 export function handleVoicelinkWebhook(body: any): WebhookResult {
+  markWebhookSeen();
   const event = String(body?.event || "");
   const vlCallId = body?.callId ?? body?.call_id ?? body?.uuid;
   const from = body?.fromNumber ?? body?.from;

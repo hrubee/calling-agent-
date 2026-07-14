@@ -551,6 +551,29 @@ function copyRow(value) {
     ),
   );
 }
+function timeAgo(iso) {
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+function voicelinkStatusLine(link) {
+  link = link || {};
+  let dot = "warn";
+  let text = "No VoiceLink connection seen yet — make a test call to verify";
+  if (link.activeConnections > 0) {
+    dot = "good";
+    text = `WebSocket CONNECTED — ${link.activeConnections} live call${link.activeConnections > 1 ? "s" : ""}`;
+  } else if (link.lastConnectedAt) {
+    dot = "good";
+    text = `WebSocket verified — VoiceLink last connected ${timeAgo(link.lastConnectedAt)} (it connects per call)`;
+  }
+  if (link.lastWebhookAt) text += ` · last webhook ${timeAgo(link.lastWebhookAt)}`;
+  return h("div", { class: "status-line", style: "margin-top:6px" }, h("span", { class: "dot " + dot }), text);
+}
+
 function renderSettings() {
   const s = state.settings;
   if (!s) return;
@@ -583,6 +606,7 @@ function renderSettings() {
     h("p", { class: "hint" }, "Paste these into the VoiceLink panel → WebSocket Bot. Route your DID to this bot in Call Routing."),
     h("div", { class: "field" }, h("label", null, "WebSocket (WSS) URL"), copyRow(s.panelUrls.wssUrl)),
     h("div", { class: "field" }, h("label", null, "Webhook URL (call lifecycle)"), copyRow(s.panelUrls.webhookUrl)),
+    voicelinkStatusLine(s.voicelinkLink),
     h(
       "div",
       { class: "status-line", style: "margin-top:6px" },
@@ -672,6 +696,10 @@ function connectSSE() {
     if (e.type === "call.created" || e.type === "call.updated") upsertCall(e.call);
     else if (e.type === "call.transcript" && state.openCallId === e.callId) openCallDetail(e.callId);
     else if (e.type === "agent.updated") loadAgents();
+    else if (e.type === "voicelink.link") {
+      if (state.settings) state.settings.voicelinkLink = e.link;
+      if (state.tab === "settings") renderSettings();
+    }
   };
 }
 

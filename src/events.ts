@@ -11,6 +11,7 @@ export type BusEvent =
   | { type: "call.updated"; call: unknown }
   | { type: "call.transcript"; callId: string; turn: unknown }
   | { type: "agent.updated"; agent: unknown }
+  | { type: "voicelink.link"; link: unknown }
   | { type: "log"; level: string; message: string };
 
 class Bus extends EventEmitter {

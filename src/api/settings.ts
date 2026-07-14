@@ -3,6 +3,7 @@ import { z } from "zod";
 import { config, panelUrls } from "../config";
 import { runDoctor } from "../sarvam/doctor";
 import { db } from "../store/db";
+import { getVoicelinkLink } from "../voicelink/linkStatus";
 
 export const settingsRouter = Router();
 
@@ -44,6 +45,7 @@ settingsRouter.get("/", (_req, res) => {
       ttsSpeaker: config.sarvam.ttsSpeaker,
     },
     outboundConfigured: config.voicelink.lead.configured,
+    voicelinkLink: getVoicelinkLink(),
     defaultLanguage: config.defaultLanguage,
     options: {
       languages: LANGUAGES,
