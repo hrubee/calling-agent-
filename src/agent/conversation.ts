@@ -429,7 +429,10 @@ export class Conversation {
       if (audio.length) {
         this.enqueueAlaw(audio, true);
         this.fillersThisTurn++;
-        if (this.fillersThisTurn < MAX_FILLERS_PER_TURN) this.armFiller(gen, FILLER_REARM_MS);
+        // Chain another filler only if a distinct phrase is configured —
+        // repeating the same phrase (or padding with "one moment") irritates.
+        const maxFillers = Math.min(MAX_FILLERS_PER_TURN, config.filler.texts.length);
+        if (this.fillersThisTurn < maxFillers) this.armFiller(gen, FILLER_REARM_MS);
       }
     } catch (err) {
       this.log.debug({ err }, "filler audio failed");

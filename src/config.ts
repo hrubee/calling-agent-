@@ -91,7 +91,7 @@ const EnvSchema = z.object({
   // so the caller never sits in dead air. Semicolon-separated, rotated per turn.
   FILLER_ENABLED: bool(true),
   FILLER_DELAY_MS: num(900),
-  FILLER_TEXTS: z.string().optional().default("Hmm.;One moment, please."),
+  FILLER_TEXTS: z.string().optional().default("Hmm."),
 });
 
 const parsed = EnvSchema.parse(process.env);
