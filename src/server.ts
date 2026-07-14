@@ -11,6 +11,7 @@ import { eventsRouter } from "./api/events";
 import { login, logout, me, requireAuth } from "./api/auth";
 import { handleVoicelinkWebhook } from "./voicelink/webhooks";
 import { getVoicelinkLink } from "./voicelink/linkStatus";
+import { chatProviderInfo } from "./llm/chat";
 
 const log = logger.child({ mod: "server" });
 
@@ -37,6 +38,8 @@ export function buildApp(): Express {
       sarvamConfigured: config.sarvam.configured,
       outboundConfigured: config.voicelink.lead.configured,
       voicelink: getVoicelinkLink(),
+      chat: chatProviderInfo(),
+      ttsStreaming: config.ttsStreaming,
       time: new Date().toISOString(),
     });
   });

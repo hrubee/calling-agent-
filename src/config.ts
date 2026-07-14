@@ -60,6 +60,20 @@ const EnvSchema = z.object({
   SARVAM_TTS_MODEL: z.string().optional().default("bulbul:v2"),
   SARVAM_TTS_SPEAKER: z.string().optional().default("anushka"),
 
+  // --- Fast reply LLM ("bridge") ---
+  // Sarvam chat models reason for ~5-10s before answering. Point these at any
+  // OpenAI-compatible endpoint (Gemini, Groq, OpenAI, OpenRouter...) to
+  // generate replies with a fast model while keeping Sarvam STT/TTS for voice.
+  // Both URL and key must be set; otherwise Sarvam chat is used.
+  CHAT_LLM_BASE_URL: z.string().optional().default(""),
+  CHAT_LLM_API_KEY: z.string().optional().default(""),
+  CHAT_LLM_MODEL: z.string().optional().default("gemini-2.5-flash"),
+  CHAT_LLM_MAX_TOKENS: num(1024),
+
+  // Stream TTS over Sarvam's WebSocket (first audio ~0.5s vs ~1.6s REST on
+  // bulbul:v3). Falls back to REST automatically on stream errors.
+  TTS_STREAMING: bool(true),
+
   DEFAULT_LANGUAGE: z.string().optional().default("auto"),
   TTS_FALLBACK_LANGUAGE: z.string().optional().default("en-IN"),
 
@@ -126,6 +140,16 @@ export const config = {
     ttsSpeaker: parsed.SARVAM_TTS_SPEAKER,
     configured: parsed.SARVAM_API_KEY.trim().length > 0,
   },
+
+  chatLlm: {
+    baseUrl: parsed.CHAT_LLM_BASE_URL.trim().replace(/\/$/, ""),
+    apiKey: parsed.CHAT_LLM_API_KEY.trim(),
+    model: parsed.CHAT_LLM_MODEL,
+    maxTokens: parsed.CHAT_LLM_MAX_TOKENS,
+    configured:
+      parsed.CHAT_LLM_BASE_URL.trim().length > 0 && parsed.CHAT_LLM_API_KEY.trim().length > 0,
+  },
+  ttsStreaming: parsed.TTS_STREAMING,
 
   defaultLanguage: parsed.DEFAULT_LANGUAGE,
   ttsFallbackLanguage: parsed.TTS_FALLBACK_LANGUAGE,

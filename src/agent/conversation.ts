@@ -4,10 +4,12 @@ import { concatInt16 } from "../audio/resample";
 import { Vad } from "../audio/vad";
 import { bus } from "../events";
 import { logger } from "../logger";
-import { streamChat, type ChatMessage } from "../sarvam/chat";
+import { streamReply } from "../llm/chat";
+import { type ChatMessage } from "../sarvam/chat";
 import { warmSarvam } from "../sarvam/client";
 import { transcribePcm8k, type SttResult } from "../sarvam/stt";
 import { synthesizeAlaw8k } from "../sarvam/tts";
+import { TtsStreamSession } from "../sarvam/ttsStream";
 import { db } from "../store/db";
 import type { Agent, TranscriptTurn } from "../store/types";
 import { buildSystemPrompt, TRANSFER_TOKEN } from "./prompt";
@@ -98,9 +100,13 @@ export class Conversation {
   private frameQueue: Buffer[] = [];
   private draining = false;
 
-  // Serial TTS worker
+  // Serial TTS worker (REST path: greeting fallback + streaming-failure fallback)
   private ttsQueue: { text: string; gen: number }[] = [];
   private ttsWorking = false;
+
+  // Streaming TTS session (one per response; ~0.5s to first audio vs ~1.6s REST)
+  private ttsSession: TtsStreamSession | null = null;
+  private ttsStreamBroken = false; // set on stream failure -> REST for rest of call
 
   // Speculative STT started during the caller's trailing silence.
   private specStt: Promise<SttResult | null> | null = null;
@@ -158,6 +164,8 @@ export class Conversation {
     this.speechGen++; // cancel any playback/tts
     this.frameQueue = [];
     this.ttsQueue = [];
+    this.ttsSession?.close();
+    this.ttsSession = null;
     this.specStt = null;
     this.clearFiller();
     this.abortController?.abort();
@@ -217,6 +225,8 @@ export class Conversation {
     this.speechGen++;
     this.frameQueue = [];
     this.ttsQueue = [];
+    this.ttsSession?.close();
+    this.ttsSession = null;
     this.clearFiller();
     this.abortController?.abort();
     this.botSpeaking = false;
@@ -280,17 +290,20 @@ export class Conversation {
   private async respond(): Promise<void> {
     this.beginResponse();
     const gen = this.speechGen;
+    this.openTtsSession(gen); // connect while the LLM is thinking
     let buffer = "";
     let full = "";
     let firstChunkSent = false;
 
     const runLlm = () =>
-      streamChat(this.messages, {
+      streamReply(this.messages, {
         model: config.sarvam.chatModel,
         temperature: this.agent.temperature,
-        // Reasoning models need headroom for "thinking" before the answer;
-        // never send less than the configured budget.
-        maxTokens: Math.max(this.agent.maxTokens, config.sarvam.chatMaxTokens),
+        // Sarvam reasoning models need headroom for "thinking" before the
+        // answer; fast external models use their own (small) budget.
+        maxTokens: config.chatLlm.configured
+          ? config.chatLlm.maxTokens
+          : Math.max(this.agent.maxTokens, config.sarvam.chatMaxTokens),
         signal: this.abortController!.signal,
         onDelta: (d) => {
           if (gen !== this.speechGen) return;
@@ -362,10 +375,58 @@ export class Conversation {
 
   // ---- TTS worker (serial, preserves sentence order) ----
 
+  // ---- Streaming TTS session (per response) ----
+
+  private openTtsSession(gen: number): void {
+    this.ttsSession?.close();
+    this.ttsSession = null;
+    if (!config.ttsStreaming || !config.sarvam.configured || this.ttsStreamBroken) return;
+
+    const session = new TtsStreamSession({
+      model: this.agent.ttsModel,
+      speaker: this.agent.ttsSpeaker,
+      targetLanguage: this.ttsLang(),
+      onAudio: (alaw) => {
+        if (gen !== this.speechGen || this.closed) return;
+        if (this.marks && this.marks.ttsFirstMs === undefined) {
+          this.marks.ttsFirstMs = Date.now() - this.marks.t0;
+        }
+        this.enqueueAlaw(alaw);
+      },
+      onIdle: () => {
+        // All submitted text synthesized; drop the socket once the reply is done.
+        if (gen !== this.speechGen || this.responseComplete) {
+          if (this.ttsSession === session) this.ttsSession = null;
+          session.close();
+        }
+      },
+      onError: (_err, lostTexts) => {
+        this.ttsStreamBroken = true; // REST for the remainder of this call
+        if (this.ttsSession === session) this.ttsSession = null;
+        if (gen !== this.speechGen || this.closed) return;
+        this.log.warn({ lost: lostTexts.length }, "TTS stream failed — falling back to REST");
+        for (const text of lostTexts) {
+          this.ttsQueue.push({ text, gen });
+        }
+        void this.runTtsWorker();
+      },
+    });
+    this.ttsSession = session;
+  }
+
+  /** Sentences not yet fully synthesized on the streaming path. */
+  private ttsStreamPending(): number {
+    return this.ttsSession?.pending ?? 0;
+  }
+
   private enqueueSentence(text: string, gen: number): void {
     const t = text.trim();
     if (!t) return;
     this.clearFiller(); // real speech is on the way
+    if (this.ttsSession && gen === this.speechGen) {
+      this.ttsSession.speak(t);
+      return;
+    }
     this.ttsQueue.push({ text: t, gen });
     void this.runTtsWorker();
   }
@@ -416,6 +477,7 @@ export class Conversation {
       this.marks?.firstAudioMs === undefined && // no real audio yet this turn
       !this.ttsWorking &&
       this.ttsQueue.length === 0 &&
+      this.ttsStreamPending() === 0 &&
       this.frameQueue.length === 0
     );
   }
@@ -501,7 +563,13 @@ export class Conversation {
         }
         if (this.frameQueue.length === 0) {
           // Nothing queued: done if the response is complete, else wait for more.
-          if (this.responseComplete && !this.ttsWorking && this.ttsQueue.length === 0) break;
+          if (
+            this.responseComplete &&
+            !this.ttsWorking &&
+            this.ttsQueue.length === 0 &&
+            this.ttsStreamPending() === 0
+          )
+            break;
         }
         await sleep(FRAME_MS);
       }

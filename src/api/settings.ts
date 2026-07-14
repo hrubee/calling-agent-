@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { config, panelUrls } from "../config";
+import { chatProviderInfo } from "../llm/chat";
 import { runDoctor } from "../sarvam/doctor";
 import { db } from "../store/db";
 import { getVoicelinkLink } from "../voicelink/linkStatus";
@@ -46,6 +47,8 @@ settingsRouter.get("/", (_req, res) => {
     },
     outboundConfigured: config.voicelink.lead.configured,
     voicelinkLink: getVoicelinkLink(),
+    chatProvider: chatProviderInfo(),
+    ttsStreaming: config.ttsStreaming,
     defaultLanguage: config.defaultLanguage,
     options: {
       languages: LANGUAGES,

@@ -148,6 +148,15 @@ Health check: `GET /healthz`.
 ---
 
 ## Notes & limitations
-- STT is batch-per-utterance (Sarvam has no public streaming STT WS), so each turn costs an STT+LLM+TTS round trip. Mitigations built in: speculative STT during the caller's trailing silence (`VAD_SPECULATIVE_MS`), a short endpoint (`VAD_SILENCE_MS=450`), the first clause of a reply is TTS'd before the sentence finishes, the Sarvam TLS connection is pre-warmed, and a filler phrase plays if the reply takes longer than `FILLER_DELAY_MS`. Per-turn timings are logged as `turn latency`.
+- Sarvam's chat models (`sarvam-30b`/`105b`) are reasoning models that "think" for 5-10s
+  before the first word — measured, and not disableable via the public API. Set the
+  `CHAT_LLM_*` vars to any fast OpenAI-compatible endpoint (e.g. Gemini Flash) to generate
+  replies in a few hundred ms while Sarvam still does STT and the TTS voice.
+- TTS streams over Sarvam's WebSocket by default (`TTS_STREAMING=true`): first audio
+  ~0.5s after the first LLM token (vs ~1.6s REST on bulbul:v3), REST fallback on error.
+- Further latency mitigations: speculative STT during the caller's trailing silence
+  (`VAD_SPECULATIVE_MS`), a short endpoint (`VAD_SILENCE_MS=450`), first-clause TTS before
+  the sentence finishes, TLS pre-warm, and a filler phrase after `FILLER_DELAY_MS` of
+  waiting. Per-turn timings are logged as `turn latency`.
 - The JSON store is single-instance. For horizontal scale, swap `src/store/db.ts` for Postgres (repository interface is already isolated).
 - Audio format assumed a-law 8 kHz mono per VoiceLink docs; TTS output has its container header stripped defensively.
