@@ -5,6 +5,7 @@ domains:
   realtime: {}
   server: {}
   api: {}
+  overstory: {}
 governance:
   max_entries: 100
   warn_entries: 150
