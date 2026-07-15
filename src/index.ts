@@ -3,6 +3,7 @@ import { WebSocketServer } from "ws";
 import { config, generatedSecrets, panelUrls } from "./config";
 import { logger } from "./logger";
 import { buildApp } from "./server";
+import { safeEq } from "./api/auth";
 import { attachMediaStream } from "./ws/mediaStream";
 import { db } from "./store/db";
 import { warmAllGreetings } from "./agent/greeting";
@@ -31,7 +32,7 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (token !== config.wssToken) {
+  if (!safeEq(token, config.wssToken)) {
     log.warn("rejected media-stream upgrade: bad token");
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
