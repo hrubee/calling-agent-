@@ -34,7 +34,21 @@ export async function streamReply(
   if (!config.chatLlm.configured) return streamChat(messages, opts);
 
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 20000);
+  // Idle watchdog, not a whole-stream cap: reset on every chunk so a healthy
+  // long reply is never cut off mid-sentence — only a silent/stalled stream
+  // times out. Surfaced as TimeoutError so callers can tell it apart from a
+  // barge-in abort (which skips turn bookkeeping; a timeout must not).
+  const timeoutMs = opts.timeoutMs ?? 20000;
+  let timedOut = false;
+  const onStall = () => {
+    timedOut = true;
+    ctrl.abort();
+  };
+  let timeout = setTimeout(onStall, timeoutMs);
+  const bumpTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(onStall, timeoutMs);
+  };
   const onExternalAbort = () => ctrl.abort();
   if (opts.signal) {
     if (opts.signal.aborted) ctrl.abort();
@@ -71,6 +85,7 @@ export async function streamReply(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      bumpTimeout();
       buffered += decoder.decode(value, { stream: true });
       const lines = buffered.split("\n");
       buffered = lines.pop() ?? "";
@@ -93,7 +108,13 @@ export async function streamReply(
     }
     return full.trim();
   } catch (err) {
-    // Surface aborts as-is (barge-in); log real failures for diagnosis.
+    if (timedOut && (err as Error)?.name === "AbortError" && !opts.signal?.aborted) {
+      log.error({ provider: chatProviderInfo(), timeoutMs }, "fast LLM stream stalled — timed out");
+      const e = new Error(`chat LLM stalled: no data for ${timeoutMs}ms`);
+      e.name = "TimeoutError";
+      throw e;
+    }
+    // Surface external aborts as-is (barge-in); log real failures for diagnosis.
     if ((err as Error)?.name !== "AbortError") {
       log.error({ err, provider: chatProviderInfo() }, "fast LLM request failed");
     }

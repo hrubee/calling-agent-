@@ -6,6 +6,12 @@ const log = logger.child({ mod: "tts-stream" });
 
 const FRAME_BYTES = 160; // 20 ms of A-law @ 8 kHz
 const ALAW_SILENCE = 0xd5;
+// Fail the session when a pending flush produces neither audio nor its
+// "final" event for this long (half-open socket / server stall). Only the
+// handshake was time-bounded before; a dropped "final" hung the reply
+// forever with botSpeaking stuck. fail() routes lost sentences to the REST
+// fallback, so a false positive only costs latency, never the reply.
+const STALL_TIMEOUT_MS = 10000;
 
 export interface TtsStreamOpts {
   model: string;
@@ -17,6 +23,8 @@ export interface TtsStreamOpts {
   onIdle: () => void;
   /** Stream failed. `pendingTexts` = sentences whose audio may be lost. */
   onError: (err: Error, pendingTexts: string[]) => void;
+  /** Stall watchdog override (tests). Defaults to STALL_TIMEOUT_MS. */
+  stallTimeoutMs?: number;
 }
 
 /**
@@ -36,6 +44,7 @@ export class TtsStreamSession {
   private queued: string[] = []; // texts submitted before the socket opened
   private pendingTexts: string[] = []; // sent, awaiting their "final" event
   private remainder: Buffer = Buffer.alloc(0);
+  private watchdog: NodeJS.Timeout | null = null;
   private readonly opts: TtsStreamOpts;
 
   constructor(opts: TtsStreamOpts) {
@@ -71,12 +80,17 @@ export class TtsStreamSession {
         return;
       }
       if (msg.type === "audio" && msg.data?.audio) {
+        if (this.pendingTexts.length > 0) this.armWatchdog(); // progress — push the deadline
         this.emitAudio(Buffer.from(msg.data.audio, "base64"));
       } else if (msg.type === "event" && msg.data?.event_type === "final") {
+        if (this.pendingTexts.length === 0) return; // spurious duplicate final — ignore
         this.pendingTexts.shift();
         if (this.pendingTexts.length === 0) {
+          this.clearWatchdog();
           this.flushRemainder();
           this.opts.onIdle();
+        } else {
+          this.armWatchdog();
         }
       } else if (msg.type === "error") {
         this.fail(new Error(`TTS stream error: ${JSON.stringify(msg).slice(0, 200)}`));
@@ -111,6 +125,7 @@ export class TtsStreamSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.clearWatchdog();
     this.remainder = Buffer.alloc(0);
     this.pendingTexts = [];
     this.queued = [];
@@ -125,6 +140,28 @@ export class TtsStreamSession {
     this.pendingTexts.push(text);
     this.send({ type: "text", data: { text } });
     this.send({ type: "flush" });
+    this.armWatchdog();
+  }
+
+  /** (Re)start the stall deadline while any flush is outstanding. */
+  private armWatchdog(): void {
+    if (this.closed) return;
+    if (this.watchdog) clearTimeout(this.watchdog);
+    const ms = this.opts.stallTimeoutMs ?? STALL_TIMEOUT_MS;
+    this.watchdog = setTimeout(() => {
+      this.fail(
+        new Error(
+          `TTS stream stalled: no audio or final event for ${ms}ms (${this.pending} pending)`,
+        ),
+      );
+    }, ms);
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
   }
 
   private send(obj: unknown): void {

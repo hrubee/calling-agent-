@@ -17,6 +17,7 @@ import { getFillerAudio, getGreetingAudio } from "./greeting";
 
 const FRAME_SAMPLES = 160; // 20 ms @ 8 kHz
 const FRAME_BYTES = 160; // A-law: 1 byte/sample
+const ALAW_SILENCE = 0xd5;
 
 // The LLM can "think" for 5s+; chain up to this many fillers while waiting.
 const MAX_FILLERS_PER_TURN = 2;
@@ -26,17 +27,36 @@ type Send = (obj: unknown) => void;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-function splitSentences(text: string): { sentences: string[]; rest: string } {
+const TERMINATORS = ".!?।";
+
+/**
+ * Split completed sentences off the front of a streaming buffer. A terminator
+ * only ends a sentence when followed by whitespace, so decimals ("Rs 1.5")
+ * stay glued together, and a terminator at the buffer edge — where the next
+ * delta may continue the number — keeps accumulating until more text arrives
+ * (the end-of-stream tail flush picks it up).
+ */
+export function splitSentences(text: string): { sentences: string[]; rest: string } {
   const sentences: string[] = [];
-  const re = /[^.!?।\n]*[.!?।\n]+/g;
   let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const s = m[0].trim();
-    if (s) sentences.push(s);
-    last = re.lastIndex;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\n") {
+      const s = text.slice(last, i).trim();
+      if (s) sentences.push(s);
+      last = i + 1;
+    } else if (TERMINATORS.includes(ch)) {
+      let j = i;
+      while (j + 1 < text.length && TERMINATORS.includes(text[j + 1])) j++;
+      if (j + 1 < text.length && /\s/.test(text[j + 1])) {
+        const s = text.slice(last, j + 1).trim();
+        if (s) sentences.push(s);
+        last = j + 1;
+      }
+      i = j;
+    }
   }
-  return { sentences, rest: text.slice(last) };
+  return { sentences, rest: text.slice(last).trimStart() };
 }
 
 const FIRST_CHUNK_MIN = 24;
@@ -142,7 +162,15 @@ export class Conversation {
     this.streamSid = streamSid;
     warmSarvam(); // pre-open the TLS connection before the first turn
     if (config.greetingEnabled && this.agent.greeting?.trim()) {
-      await this.greet();
+      // Serialize with caller turns: if the caller speaks while greeting audio
+      // is still being synthesized (cache miss ~1.5s), their turn queues
+      // behind greet() instead of racing it — a concurrent respond() shares
+      // responseComplete and the TTS session, so the race could end drain()
+      // mid-reply and fire a pending transfer early.
+      this.turnChain = this.turnChain.then(() =>
+        this.greet().catch((err) => this.log.error({ err }, "greeting failed")),
+      );
+      await this.turnChain;
     }
   }
 
@@ -195,7 +223,20 @@ export class Conversation {
       case "speech-start":
         warmSarvam(); // STT follows within seconds — pay the TLS handshake now
         this.specStt = null;
-        if (this.botSpeaking || this.ttsWorking || this.frameQueue.length > 0) this.bargeIn();
+        // A reply is "in flight" from the moment respond() starts until its
+        // last frame is sent: cover the LLM think window (!responseComplete)
+        // and the streaming-TTS ramp (ttsStreamPending), not just audible
+        // frames — otherwise a stale reply starts playing over the caller's
+        // follow-up ("Hello? Are you there?") and both get answered.
+        if (
+          this.botSpeaking ||
+          this.ttsWorking ||
+          this.frameQueue.length > 0 ||
+          this.ttsStreamPending() > 0 ||
+          !this.responseComplete
+        ) {
+          this.bargeIn();
+        }
         break;
       case "speech":
         // Caller resumed after a pause — any speculative transcript is stale.
@@ -231,6 +272,10 @@ export class Conversation {
     this.abortController?.abort();
     this.botSpeaking = false;
     this.pendingTransfer = false;
+    // The aborted respond() unwinds without touching state for a superseded
+    // gen, so restore the resting value here — a lingering `false` would make
+    // every later speech-start a spurious barge-in.
+    this.responseComplete = true;
     if (this.streamSid) this.send({ event: "clear", stream_sid: this.streamSid });
   }
 
@@ -293,10 +338,12 @@ export class Conversation {
     this.openTtsSession(gen); // connect while the LLM is thinking
     let buffer = "";
     let full = "";
+    let streamed = ""; // deltas accepted this generation — history source on timeout
     let firstChunkSent = false;
 
-    const runLlm = () =>
-      streamReply(this.messages, {
+    const runLlm = () => {
+      streamed = "";
+      return streamReply(this.messages, {
         model: config.sarvam.chatModel,
         temperature: this.agent.temperature,
         // Sarvam reasoning models need headroom for "thinking" before the
@@ -310,6 +357,7 @@ export class Conversation {
           if (this.marks && this.marks.llmFirstMs === undefined) {
             this.marks.llmFirstMs = Date.now() - this.marks.t0;
           }
+          streamed += d;
           buffer += d;
           if (buffer.includes(TRANSFER_TOKEN)) {
             this.pendingTransfer = true;
@@ -330,12 +378,26 @@ export class Conversation {
             }
           }
           // Flush an over-long tail without a terminator to keep latency low.
+          // Cut at a word boundary (never mid-word), which also keeps a
+          // partial [[TRANSFER]] split across deltas out of the spoken text;
+          // with no usable space, hold back just the partial token prefix.
           if (buffer.length > 240) {
-            this.enqueueSentence(buffer, gen);
-            buffer = "";
+            let cut = buffer.lastIndexOf(" ");
+            if (cut < 160) {
+              cut = buffer.length;
+              for (let k = TRANSFER_TOKEN.length - 1; k > 0; k--) {
+                if (buffer.endsWith(TRANSFER_TOKEN.slice(0, k))) {
+                  cut = buffer.length - k;
+                  break;
+                }
+              }
+            }
+            this.enqueueSentence(buffer.slice(0, cut), gen);
+            buffer = buffer.slice(cut);
           }
         },
       });
+    };
 
     try {
       full = await runLlm();
@@ -346,8 +408,14 @@ export class Conversation {
         full = await runLlm();
       }
     } catch (err: any) {
-      if (err?.name === "AbortError") return; // barged-in
+      // Only a barge-in / call end (which bump speechGen or set closed BEFORE
+      // aborting) may skip the bookkeeping below. A stream timeout surfaces
+      // here as TimeoutError: fall through so the turn closes cleanly —
+      // responseComplete flips, drain() can emit response_done — and history
+      // keeps what the caller actually heard.
+      if (err?.name === "AbortError" && (gen !== this.speechGen || this.closed)) return;
       this.log.error({ err }, "chat failed");
+      full = streamed;
     }
 
     if (gen !== this.speechGen) return; // superseded
@@ -444,10 +512,12 @@ export class Conversation {
             speaker: this.agent.ttsSpeaker,
             model: this.agent.ttsModel,
           });
+          // Gen check BEFORE stamping marks: a pre-barge-in synthesis that
+          // finishes late must not corrupt the next turn's latency numbers.
+          if (item.gen !== this.speechGen || this.closed) continue;
           if (this.marks && this.marks.ttsFirstMs === undefined) {
             this.marks.ttsFirstMs = Date.now() - this.marks.t0;
           }
-          if (item.gen !== this.speechGen || this.closed) continue;
           this.enqueueAlaw(alaw);
         } catch (err) {
           this.log.error({ err }, "TTS failed");
@@ -531,7 +601,16 @@ export class Conversation {
       );
     }
     for (let i = 0; i < alaw.length; i += FRAME_BYTES) {
-      this.frameQueue.push(alaw.subarray(i, Math.min(i + FRAME_BYTES, alaw.length)));
+      const frame = alaw.subarray(i, Math.min(i + FRAME_BYTES, alaw.length));
+      if (frame.length === FRAME_BYTES) {
+        this.frameQueue.push(frame);
+      } else {
+        // REST/greeting audio isn't 160-byte aligned; pad the tail to a whole
+        // 20 ms frame (the streaming path already does — flushRemainder).
+        const padded = Buffer.alloc(FRAME_BYTES, ALAW_SILENCE);
+        frame.copy(padded);
+        this.frameQueue.push(padded);
+      }
     }
     void this.drain();
   }
@@ -547,7 +626,7 @@ export class Conversation {
     // gaps, which otherwise sound like static/choppiness on the caller's end.
     const FRAME_MS = 20;
     const LEAD_MS = 200;
-    const startWall = Date.now();
+    let startWall = Date.now();
     try {
       while (!this.closed) {
         if (gen !== this.speechGen) break;
@@ -570,6 +649,10 @@ export class Conversation {
             this.ttsStreamPending() === 0
           )
             break;
+          // Underrun (e.g. filler played, real reply still synthesizing):
+          // re-anchor the pacing clock so the gap doesn't accumulate send
+          // budget that would burst out in one iteration when audio arrives.
+          startWall = Date.now() - sent * FRAME_MS;
         }
         await sleep(FRAME_MS);
       }
