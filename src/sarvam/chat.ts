@@ -21,7 +21,21 @@ export interface ChatOptions {
 export async function streamChat(messages: ChatMessage[], opts: ChatOptions = {}): Promise<string> {
   assertConfigured();
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 30000);
+  // Idle watchdog, not a whole-stream cap: reset on every chunk so a long
+  // reply (or 5-10s of silent "reasoning") is only killed when the stream
+  // truly stalls. Surfaced as TimeoutError so callers can tell it apart from
+  // a barge-in abort.
+  const timeoutMs = opts.timeoutMs ?? 30000;
+  let timedOut = false;
+  const onStall = () => {
+    timedOut = true;
+    ctrl.abort();
+  };
+  let timeout = setTimeout(onStall, timeoutMs);
+  const bumpTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(onStall, timeoutMs);
+  };
   const onExternalAbort = () => ctrl.abort();
   if (opts.signal) {
     if (opts.signal.aborted) ctrl.abort();
@@ -56,6 +70,7 @@ export async function streamChat(messages: ChatMessage[], opts: ChatOptions = {}
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      bumpTimeout();
       buffered += decoder.decode(value, { stream: true });
       const lines = buffered.split("\n");
       buffered = lines.pop() ?? "";
@@ -77,6 +92,13 @@ export async function streamChat(messages: ChatMessage[], opts: ChatOptions = {}
       }
     }
     return full.trim();
+  } catch (err) {
+    if (timedOut && (err as Error)?.name === "AbortError" && !opts.signal?.aborted) {
+      const e = new Error(`Sarvam chat stalled: no data for ${timeoutMs}ms`);
+      e.name = "TimeoutError";
+      throw e;
+    }
+    throw err;
   } finally {
     clearTimeout(timeout);
     if (opts.signal) opts.signal.removeEventListener("abort", onExternalAbort);
