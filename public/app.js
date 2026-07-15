@@ -124,15 +124,14 @@ $("#logout-btn").addEventListener("click", async () => {
 });
 
 /* ---------- tabs ---------- */
-$$(".tab").forEach((t) =>
-  t.addEventListener("click", () => {
-    state.tab = t.dataset.tab;
-    $$(".tab").forEach((x) => x.classList.toggle("active", x === t));
-    $$(".tab-panel").forEach((p) => p.classList.add("hidden"));
-    $("#tab-" + state.tab).classList.remove("hidden");
-    if (state.tab === "settings") renderSettings();
-  }),
-);
+function switchTab(name) {
+  state.tab = name;
+  $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  $$(".tab-panel").forEach((p) => p.classList.add("hidden"));
+  $("#tab-" + name).classList.remove("hidden");
+  if (name === "settings") renderSettings();
+}
+$$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
 
 /* ---------- CALLS ---------- */
 function statusBadge(s) {
@@ -280,7 +279,7 @@ function openPlaceCall() {
                 await api("POST", "/api/calls", { to, agentId: agentSel.value, did: didSel.value || undefined });
                 toast("Call triggered");
                 closeModal();
-                state.tab = "calls";
+                switchTab("calls");
               } catch (e) {
                 toast(e.message || "Failed to place call", true);
               }
@@ -333,9 +332,13 @@ function callWithAgent(a) {
 }
 async function deleteAgent(a) {
   if (!confirm(`Delete agent "${a.name}"?`)) return;
-  await api("DELETE", "/api/agents/" + a.id);
-  await loadAgents();
-  toast("Agent deleted");
+  try {
+    await api("DELETE", "/api/agents/" + a.id);
+    await loadAgents();
+    toast("Agent deleted");
+  } catch (e) {
+    toast(e.message || "Delete failed", true);
+  }
 }
 
 function openAgentEditor(agent) {
@@ -418,7 +421,7 @@ function openAgentEditor(agent) {
                 systemPrompt: prompt.value,
                 transferNumber: transfer.value.trim(),
                 temperature: parseFloat(temp.value) || 0.4,
-                maxTokens: parseInt(maxTok.value, 10) || 200,
+                maxTokens: parseInt(maxTok.value, 10) || 2048,
               };
               if (!payload.name) return toast("Name is required", true);
               try {
@@ -480,8 +483,12 @@ function renderNumbers() {
 }
 async function deleteNumber(n) {
   if (!confirm(`Remove ${n.number}?`)) return;
-  await api("DELETE", "/api/numbers/" + n.id);
-  await loadNumbers();
+  try {
+    await api("DELETE", "/api/numbers/" + n.id);
+    await loadNumbers();
+  } catch (e) {
+    toast(e.message || "Delete failed", true);
+  }
 }
 function openNumberEditor(rec) {
   const isNew = !rec;
@@ -510,7 +517,7 @@ function openNumberEditor(rec) {
           {
             class: "btn btn-primary",
             onclick: async () => {
-              const payload = { number: number.value.trim(), label: label.value.trim(), agentId: agent.value || undefined };
+              const payload = { number: number.value.trim(), label: label.value.trim(), agentId: agent.value || null };
               if (!payload.number) return toast("Number required", true);
               try {
                 if (isNew) await api("POST", "/api/numbers", payload);
@@ -619,8 +626,12 @@ function renderSettings() {
   const defSel = h("select", null, ...state.agents.map((a) => h("option", { value: a.id }, a.name)));
   if (s.settings.defaultAgentId) defSel.value = s.settings.defaultAgentId;
   defSel.addEventListener("change", async () => {
-    await api("PUT", "/api/settings", { defaultAgentId: defSel.value });
-    toast("Saved");
+    try {
+      await api("PUT", "/api/settings", { defaultAgentId: defSel.value });
+      toast("Saved");
+    } catch (e) {
+      toast(e.message || "Save failed", true);
+    }
   });
   const genCard = h(
     "div",
