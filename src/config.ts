@@ -74,6 +74,12 @@ const EnvSchema = z.object({
   // bulbul:v3). Falls back to REST automatically on stream errors.
   TTS_STREAMING: bool(true),
 
+  // Stream STT over Sarvam's WebSocket (saaras:v3): audio is transcribed while
+  // the caller is still speaking, so the transcript is ready ~one round-trip
+  // after they stop instead of a full upload + inference round-trip. Falls
+  // back to REST automatically on stream errors.
+  STT_STREAMING: bool(true),
+
   DEFAULT_LANGUAGE: z.string().optional().default("auto"),
   TTS_FALLBACK_LANGUAGE: z.string().optional().default("en-IN"),
 
@@ -150,6 +156,7 @@ export const config = {
       parsed.CHAT_LLM_BASE_URL.trim().length > 0 && parsed.CHAT_LLM_API_KEY.trim().length > 0,
   },
   ttsStreaming: parsed.TTS_STREAMING,
+  sttStreaming: parsed.STT_STREAMING,
 
   defaultLanguage: parsed.DEFAULT_LANGUAGE,
   ttsFallbackLanguage: parsed.TTS_FALLBACK_LANGUAGE,

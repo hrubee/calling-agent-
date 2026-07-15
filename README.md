@@ -41,7 +41,7 @@ src/
   server.ts           Express app: dashboard, API, auth, webhook
   config.ts           env parsing + generated secrets
   audio/              g711 (a-law), resample, wav, vad  (pure JS, no native deps)
-  sarvam/             client, stt, tts, chat (streaming), doctor
+  sarvam/             client, stt + sttStream, tts + ttsStream, chat (streaming), doctor
   agent/              prompt + conversation engine (STT→LLM→TTS, barge-in)
   ws/mediaStream.ts   VoiceLink bot protocol handler
   voicelink/          webhooks (lifecycle) + outbound (env-configurable Lead API)
@@ -154,9 +154,14 @@ Health check: `GET /healthz`.
   replies in a few hundred ms while Sarvam still does STT and the TTS voice.
 - TTS streams over Sarvam's WebSocket by default (`TTS_STREAMING=true`): first audio
   ~0.5s after the first LLM token (vs ~1.6s REST on bulbul:v3), REST fallback on error.
-- Further latency mitigations: speculative STT during the caller's trailing silence
-  (`VAD_SPECULATIVE_MS`), a short endpoint (`VAD_SILENCE_MS=450`), first-clause TTS before
-  the sentence finishes, TLS pre-warm, and a filler phrase after `FILLER_DELAY_MS` of
-  waiting. Per-turn timings are logged as `turn latency`.
+- STT also streams over Sarvam's WebSocket by default (`STT_STREAMING=true`, saaras:v3):
+  caller audio is transcribed while they're still talking, so the transcript lands ~one
+  flush round-trip after the endpoint instead of a whole upload + inference round-trip.
+  Falls back to REST STT automatically if the stream fails.
+- Further latency mitigations: speculative REST STT during the caller's trailing silence
+  (`VAD_SPECULATIVE_MS`, used when STT streaming is off or broken), a short endpoint
+  (`VAD_SILENCE_MS=450`), first-clause TTS before the sentence finishes, TLS pre-warm,
+  and a filler phrase after `FILLER_DELAY_MS` of waiting. Per-turn timings are logged
+  as `turn latency`.
 - The JSON store is single-instance. For horizontal scale, swap `src/store/db.ts` for Postgres (repository interface is already isolated).
 - Audio format assumed a-law 8 kHz mono per VoiceLink docs; TTS output has its container header stripped defensively.

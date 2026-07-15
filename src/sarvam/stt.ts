@@ -9,6 +9,11 @@ export interface SttResult {
   raw: unknown;
 }
 
+/** Sarvam expects the literal "unknown" for auto-detection (REST and WS alike). */
+export function sttLanguageCode(language: string): string {
+  return !language || language === "auto" ? "unknown" : language;
+}
+
 /**
  * Transcribe PCM16 audio via Sarvam Speech-to-Text.
  *
@@ -28,7 +33,7 @@ export async function transcribeWav(wav: Buffer, language = "auto"): Promise<Stt
   const form = new FormData();
   form.append("file", new Blob([wav], { type: "audio/wav" }), "audio.wav");
   form.append("model", config.sarvam.sttModel);
-  form.append("language_code", language === "auto" ? "unknown" : language);
+  form.append("language_code", sttLanguageCode(language));
   if (config.sarvam.sttModel.toLowerCase().includes("saaras")) {
     form.append("mode", "transcribe");
   }
