@@ -8,6 +8,7 @@ import { streamReply } from "../llm/chat";
 import { type ChatMessage } from "../sarvam/chat";
 import { warmSarvam } from "../sarvam/client";
 import { transcribePcm8k, type SttResult } from "../sarvam/stt";
+import { SttStreamSession } from "../sarvam/sttStream";
 import { synthesizeAlaw8k } from "../sarvam/tts";
 import { TtsStreamSession } from "../sarvam/ttsStream";
 import { db } from "../store/db";
@@ -18,6 +19,11 @@ import { getFillerAudio, getGreetingAudio } from "./greeting";
 const FRAME_SAMPLES = 160; // 20 ms @ 8 kHz
 const FRAME_BYTES = 160; // A-law: 1 byte/sample
 const ALAW_SILENCE = 0xd5;
+
+// Idle audio kept for the streaming-STT warm start: 12 x 20 ms frames mirrors
+// the Vad's 240 ms preRollMs, so the stream hears the same un-clipped speech
+// onset that ends up in the REST-fallback utterance buffer.
+const STT_PRE_ROLL_FRAMES = 12;
 
 // The LLM can "think" for 5s+; chain up to this many fillers while waiting.
 const MAX_FILLERS_PER_TURN = 2;
@@ -131,6 +137,11 @@ export class Conversation {
   // Speculative STT started during the caller's trailing silence.
   private specStt: Promise<SttResult | null> | null = null;
 
+  // Streaming STT session (one per utterance; transcribes while the caller talks)
+  private sttSession: SttStreamSession | null = null;
+  private sttStreamBroken = false; // set on stream failure -> REST for rest of call
+  private sttPreRoll: Int16Array[] = []; // last ~240 ms of idle audio, session warm start
+
   // Filler ("Hmm.") played if the reply isn't ready within the delay.
   private fillerTimer: NodeJS.Timeout | null = null;
   private fillerIdx = 0;
@@ -194,6 +205,8 @@ export class Conversation {
     this.ttsQueue = [];
     this.ttsSession?.close();
     this.ttsSession = null;
+    this.sttSession?.close();
+    this.sttSession = null;
     this.specStt = null;
     this.clearFiller();
     this.abortController?.abort();
@@ -218,10 +231,28 @@ export class Conversation {
   }
 
   private feedVad(frame: Int16Array): void {
+    // Streaming STT: frames flow to the live session as they arrive; between
+    // utterances a short ring buffer keeps the audio a future session needs
+    // for an un-clipped speech onset (the Vad's pre-roll isn't exposed).
+    if (this.sttSession) {
+      this.sttSession.sendPcm8k(frame);
+    } else {
+      this.sttPreRoll.push(frame);
+      if (this.sttPreRoll.length > STT_PRE_ROLL_FRAMES) this.sttPreRoll.shift();
+    }
     const r = this.vad.push(frame);
     switch (r.type) {
+      case "silence":
+        // Only reachable with a live session after a Vad false start (noise
+        // that hit maxMs without ever becoming real speech): the utterance
+        // was discarded, so discard its stream too.
+        if (this.sttSession) {
+          this.sttSession.close();
+          this.sttSession = null;
+        }
+        break;
       case "speech-start":
-        warmSarvam(); // STT follows within seconds — pay the TLS handshake now
+        warmSarvam(); // REST STT/TTS may follow within seconds — pay the TLS handshake now
         this.specStt = null;
         // A reply is "in flight" from the moment respond() starts until its
         // last frame is sent: cover the LLM think window (!responseComplete)
@@ -237,12 +268,16 @@ export class Conversation {
         ) {
           this.bargeIn();
         }
+        this.openSttSession(); // connect while the caller is still talking
         break;
       case "speech":
         // Caller resumed after a pause — any speculative transcript is stale.
         if (r.voiced) this.specStt = null;
         break;
       case "speech-early":
+        // A live stream has already transcribed everything heard so far — a
+        // speculative REST call could only be slower. REST-only path otherwise.
+        if (this.sttSession) break;
         // Start STT during the trailing silence; discarded if speech resumes.
         this.specStt = transcribePcm8k(r.pcm, this.agent.language).catch((err) => {
           this.log.debug({ err }, "speculative STT failed");
@@ -251,7 +286,7 @@ export class Conversation {
         break;
       case "utterance": {
         const pcm = r.pcm;
-        const spec = this.specStt;
+        const spec = this.takeSttStreamFinish() ?? this.specStt;
         this.specStt = null;
         this.turnChain = this.turnChain.then(() =>
           this.handleUtterance(pcm, spec).catch((err) => this.log.error({ err }, "turn failed")),
@@ -259,6 +294,37 @@ export class Conversation {
         break;
       }
     }
+  }
+
+  // ---- Streaming STT session (per utterance) ----
+
+  private openSttSession(): void {
+    this.sttSession?.close();
+    this.sttSession = null;
+    if (!config.sttStreaming || !config.sarvam.configured || this.sttStreamBroken) return;
+    const session = new SttStreamSession({
+      language: this.agent.language,
+      model: config.sarvam.sttModel,
+    });
+    for (const f of this.sttPreRoll) session.sendPcm8k(f);
+    this.sttPreRoll = [];
+    this.sttSession = session;
+  }
+
+  /**
+   * Detach the live session and flush it into a transcript promise shaped
+   * like speculative STT: null (no session) or a rejection-mapped-to-null
+   * makes handleUtterance fall back to REST with the full utterance buffer.
+   */
+  private takeSttStreamFinish(): Promise<SttResult | null> | null {
+    const session = this.sttSession;
+    if (!session) return null;
+    this.sttSession = null;
+    return session.finish().catch((err) => {
+      this.sttStreamBroken = true; // REST for the remainder of this call
+      this.log.warn({ err: err?.message }, "STT stream failed — falling back to REST");
+      return null;
+    });
   }
 
   private bargeIn(): void {
