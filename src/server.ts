@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import express, { type Express } from "express";
+import express, { type ErrorRequestHandler, type Express } from "express";
 import { config, panelUrls } from "./config";
 import { logger } from "./logger";
 import { adminRouter } from "./api/admin";
@@ -8,7 +8,7 @@ import { callsRouter } from "./api/calls";
 import { numbersRouter } from "./api/numbers";
 import { settingsRouter } from "./api/settings";
 import { eventsRouter } from "./api/events";
-import { login, logout, me, requireAuth } from "./api/auth";
+import { login, logout, me, requireAuth, safeEq } from "./api/auth";
 import { handleVoicelinkWebhook } from "./voicelink/webhooks";
 import { getVoicelinkLink } from "./voicelink/linkStatus";
 import { chatProviderInfo } from "./llm/chat";
@@ -26,7 +26,13 @@ export function buildApp(): Express {
     next();
   });
 
-  app.use(express.json({ limit: "1mb" }));
+  // /api/admin/import parses its own body with a much larger limit (see
+  // api/admin.ts) — running the 1mb parser first would 413 big backups.
+  const jsonBody = express.json({ limit: "1mb" });
+  app.use((req, res, next) => {
+    if (req.path.replace(/\/+$/, "") === "/api/admin/import") return next();
+    jsonBody(req, res, next);
+  });
   app.use(express.urlencoded({ extended: true }));
 
   // --- Health (unauthenticated) ---
@@ -50,7 +56,8 @@ export function buildApp(): Express {
 
   // --- VoiceLink lifecycle webhook (token-guarded, not session) ---
   app.all("/webhooks/voicelink", (req, res) => {
-    if (req.query.token !== config.webhookToken) {
+    const token = typeof req.query.token === "string" ? req.query.token : "";
+    if (!safeEq(token, config.webhookToken)) {
       return res.status(401).json({ error: "invalid token" });
     }
     try {
@@ -82,6 +89,27 @@ export function buildApp(): Express {
     if (req.path.startsWith("/api") || req.path.startsWith("/webhooks")) return next();
     res.sendFile(join(publicDir, "index.html"));
   });
+
+  // JSON error responses — without this, body-parser errors (413 too large,
+  // malformed JSON) fall through to Express's default HTML error page and the
+  // dashboard's JSON.parse chokes on "<!DOCTYPE ...".
+  const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+    if (res.headersSent) return next(err);
+    const e = (err ?? {}) as { status?: number; statusCode?: number; type?: string; message?: string };
+    const status =
+      typeof e.status === "number" ? e.status : typeof e.statusCode === "number" ? e.statusCode : 500;
+    if (status >= 500) log.error({ err }, "unhandled request error");
+    const error =
+      e.type === "entity.too.large"
+        ? "payload too large"
+        : e.type === "entity.parse.failed"
+          ? "malformed JSON body"
+          : status >= 500
+            ? "internal error"
+            : e.message || "bad request";
+    res.status(status).json({ error });
+  };
+  app.use(errorHandler);
 
   log.info({ urls: panelUrls() }, "app built");
   return app;
