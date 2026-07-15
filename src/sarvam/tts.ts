@@ -27,7 +27,8 @@ export async function synthesizeAlaw8k(text: string, opts: TtsOptions): Promise<
     model,
     speech_sample_rate: 8000,
     output_audio_codec: "alaw",
-    pace: opts.pace ?? 1.0,
+    enable_preprocessing: true,
+    pace: opts.pace ?? 0.9,
   };
 
   // Primary shape uses `text`. Some Sarvam versions expect `inputs: [text]`.
