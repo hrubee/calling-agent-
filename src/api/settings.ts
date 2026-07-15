@@ -4,6 +4,7 @@ import { config, panelUrls } from "../config";
 import { chatProviderInfo } from "../llm/chat";
 import { runDoctor } from "../sarvam/doctor";
 import { db } from "../store/db";
+import type { Settings } from "../store/types";
 import { getVoicelinkLink } from "../voicelink/linkStatus";
 
 export const settingsRouter = Router();
@@ -59,9 +60,20 @@ settingsRouter.get("/", (_req, res) => {
 });
 
 settingsRouter.put("/", (req, res) => {
-  const parsed = z.object({ defaultAgentId: z.string().optional() }).safeParse(req.body);
+  // defaultAgentId: null (or "") clears the fallback; a non-empty id must exist.
+  const parsed = z
+    .object({ defaultAgentId: z.string().nullable().optional() })
+    .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  res.json(db.updateSettings(parsed.data));
+  const patch: Partial<Settings> = {};
+  const { defaultAgentId } = parsed.data;
+  if (defaultAgentId !== undefined) {
+    if (defaultAgentId && !db.getAgent(defaultAgentId)) {
+      return res.status(400).json({ error: "unknown defaultAgentId" });
+    }
+    patch.defaultAgentId = defaultAgentId || undefined;
+  }
+  res.json(db.updateSettings(patch));
 });
 
 settingsRouter.post("/doctor", async (_req, res) => {

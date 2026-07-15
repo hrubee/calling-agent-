@@ -9,7 +9,7 @@ export const callsRouter = Router();
 const log = logger.child({ mod: "api-calls" });
 
 callsRouter.get("/", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
   res.json(db.listCalls(limit));
 });
 
@@ -33,6 +33,7 @@ callsRouter.post("/", async (req, res) => {
   const { to, agentId, did, params } = parsed.data;
 
   const agent = agentId ? db.getAgent(agentId) : db.resolveAgent({});
+  if (agentId && !agent) return res.status(400).json({ error: "unknown agentId" });
   const call = db.createCall({
     direction: "outbound",
     to,
