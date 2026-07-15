@@ -65,6 +65,7 @@ export class TtsStreamSession {
           speaker: this.opts.speaker,
           output_audio_codec: "alaw",
           speech_sample_rate: 8000,
+          enable_preprocessing: true,
         },
       });
       const backlog = this.queued;
