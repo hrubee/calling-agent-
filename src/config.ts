@@ -59,6 +59,7 @@ const EnvSchema = z.object({
   SARVAM_STT_MODEL: z.string().optional().default("saaras:v3"),
   SARVAM_TTS_MODEL: z.string().optional().default("bulbul:v2"),
   SARVAM_TTS_SPEAKER: z.string().optional().default("anushka"),
+  SARVAM_TTS_PACE: num(1.15),
 
   // --- Fast reply LLM ("bridge") ---
   // Sarvam chat models reason for ~5-10s before answering. Point these at any
@@ -144,6 +145,7 @@ export const config = {
     sttModel: parsed.SARVAM_STT_MODEL,
     ttsModel: parsed.SARVAM_TTS_MODEL,
     ttsSpeaker: parsed.SARVAM_TTS_SPEAKER,
+    ttsPace: parsed.SARVAM_TTS_PACE,
     configured: parsed.SARVAM_API_KEY.trim().length > 0,
   },
 
