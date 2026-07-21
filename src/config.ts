@@ -107,6 +107,7 @@ const EnvSchema = z.object({
   VAD_SPECULATIVE_MS: num(250),
   UTTERANCE_MAX_MS: num(15000),
   GREETING_ENABLED: bool(true),
+  CAMPAIGN_AUDIO_FILE: z.string().optional().default(""),
 
   // Filler phrases ("Hmm.") played if the reply isn't ready within the delay,
   // so the caller never sits in dead air. Semicolon-separated, rotated per turn.
@@ -188,6 +189,7 @@ export const config = {
     utteranceMaxMs: parsed.UTTERANCE_MAX_MS,
   },
   greetingEnabled: parsed.GREETING_ENABLED,
+  campaignAudioFile: parsed.CAMPAIGN_AUDIO_FILE.trim(),
 
   filler: {
     enabled: parsed.FILLER_ENABLED,

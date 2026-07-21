@@ -1,6 +1,7 @@
 import { config } from "../config";
 import { logger } from "../logger";
 import { synthesizeAlaw8k } from "../sarvam/tts";
+import { readFileSync } from "node:fs"; import { stripWavHeader } from "../audio/wav"; import { encodeAlaw } from "../audio/g711";
 import { db } from "../store/db";
 import type { Agent } from "../store/types";
 
@@ -44,8 +45,10 @@ async function cachedTts(agent: Agent, text: string, lang: string): Promise<Buff
   return audio;
 }
 
+let recordingCache: Buffer | null = null; function loadRecordingAlaw(path: string): Buffer { if (recordingCache) return recordingCache; const pcm16le = stripWavHeader(readFileSync(path)); const n = Math.floor(pcm16le.length / 2); const pcm = new Int16Array(n); for (let i = 0; i < n; i++) pcm[i] = pcm16le.readInt16LE(i * 2); recordingCache = encodeAlaw(pcm); return recordingCache; }
 /** Return cached greeting audio (A-law 8k), synthesizing + caching on a miss. */
 export async function getGreetingAudio(agent: Agent): Promise<Buffer> {
+  if (config.campaignAudioFile) { try { return loadRecordingAlaw(config.campaignAudioFile); } catch (err) { log.warn({ err: (err as Error).message }, "campaign audio load failed; using TTS"); } }
   return cachedTts(agent, agent.greeting?.trim() ?? "", greetLang(agent));
 }
 
