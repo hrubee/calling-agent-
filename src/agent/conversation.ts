@@ -150,12 +150,14 @@ export class Conversation {
   // Per-turn latency instrumentation.
   private marks: TurnMarks | null = null;
 
+  private hangup?: () => void;
   private closed = false;
 
-  constructor(opts: { agent: Agent; send: Send; callId: string }) {
+  constructor(opts: { agent: Agent; send: Send; callId: string; hangup?: () => void }) {
     this.agent = opts.agent;
     this.send = opts.send;
     this.callId = opts.callId;
+    this.hangup = opts.hangup;
     this.messages = [{ role: "system", content: buildSystemPrompt(this.agent) }];
     this.vad = new Vad({
       sampleRate: 8000,
@@ -731,6 +733,7 @@ export class Conversation {
       this.botSpeaking = false;
       this.log.info({ callId: this.callId, frames: sent }, "response audio sent");
       this.send({ event: "mark", stream_sid: this.streamSid, mark: { name: "response_done" } });
+      if (config.campaignAudioFile) setTimeout(() => this.hangup?.(), 900);
       if (this.pendingTransfer && this.agent.transferNumber) {
         this.doTransfer();
       }

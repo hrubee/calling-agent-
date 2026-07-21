@@ -142,7 +142,7 @@ export function attachMediaStream(ws: WebSocket): void {
       { callId, agent: agent.name, from, to, streamSid, mediaFormat: s.media_format },
       "call started",
     );
-    conv = new Conversation({ agent, send, callId });
+    conv = new Conversation({ agent, send, callId, hangup: () => { try { ws.close(); } catch {} } });
     await conv.start(streamSid);
   }
 
