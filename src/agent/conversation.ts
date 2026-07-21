@@ -216,6 +216,7 @@ export class Conversation {
 
   onInboundAudio(base64: string): void {
     if (this.closed) return;
+    if (config.campaignAudioFile) return;
     let pcm: Int16Array;
     try {
       pcm = decodeAlaw(Buffer.from(base64, "base64"));
